@@ -18,6 +18,7 @@ from __future__ import annotations
 from buddhism.pratitya import Cell, Conditioned, batch, cell, derive, derived, on_change
 
 from . import __  # noqa: F401
+from buddhism.karma import pure
 
 TITLE = "Dependent Origination — values arising from conditions."
 
@@ -131,7 +132,9 @@ def _step_batched_updates_collapse() -> None:
     assert fires == [30]
 
 
+@pure
 def KOAN() -> None:
+    """Run all steps of this koan; raises AssertionError on first failure."""
     _step_standalone_signals()
     _step_descriptors_on_a_class()
     _step_only_actual_dependencies_are_tracked()

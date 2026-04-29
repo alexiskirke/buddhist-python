@@ -18,6 +18,7 @@ the attributes its class makes available; they too can be replaced.
 from __future__ import annotations
 
 from . import __  # noqa: F401
+from buddhism.karma import pure
 
 TITLE = "Non-Self — identity is not equality, and equality is not sameness."
 
@@ -123,7 +124,9 @@ def _step_descriptors_intercept_self() -> None:
     # to belong to `b`.
 
 
+@pure
 def KOAN() -> None:
+    """Run all steps of this koan; raises AssertionError on first failure."""
     _step_identity_is_contingent()
     _step_small_int_caching_is_an_implementation_detail()
     _step_attributes_are_a_dict_not_a_self()

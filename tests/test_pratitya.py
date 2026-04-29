@@ -362,3 +362,155 @@ def test_cell_thread_safe_visibility():
     t.start()
     t.join()
     assert a() == 1000
+
+
+@pytest.mark.xfail(
+    reason=(
+        "v0.2 documented limitation: pratitya is single-writer / multi-reader "
+        "in the trivial sense (per-node RLock prevents value tearing inside "
+        "a single get/set) but the invalidation cascade and ContextVar-based "
+        "batches do not cross OS threads, so concurrent readers can observe "
+        "intermediate cascade states. A graph-level RLock is the v0.3 fix."
+    ),
+    strict=False,
+)
+def test_concurrent_read_write_no_torn_states():
+    """Concurrent writer + readers should never observe torn cascade states."""
+    a = Cell(0)
+    b = Cell(0)
+
+    @derive
+    def s() -> int:
+        # The invariant: when the writer keeps a == b, the sum is always 2*a.
+        return a() + b()
+
+    s()  # prime
+
+    stop = threading.Event()
+    seen_inconsistent = []
+
+    def writer() -> None:
+        for i in range(2000):
+            with batch():
+                a.set(i)
+                b.set(i)
+        stop.set()
+
+    def reader() -> None:
+        while not stop.is_set():
+            v = s()
+            # If the cascade tore, we'd see odd values (a even, b odd).
+            # With single-writer batched writes, sum is always even.
+            if v % 2 != 0:
+                seen_inconsistent.append(v)
+
+    w = threading.Thread(target=writer)
+    rs = [threading.Thread(target=reader) for _ in range(2)]
+    w.start()
+    for r in rs:
+        r.start()
+    w.join()
+    for r in rs:
+        r.join()
+    assert not seen_inconsistent, (
+        f"saw torn reads (single-writer expectation violated): "
+        f"{seen_inconsistent[:5]}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# v0.2 fixes — equality_check, slots-only classes, strong-ref opt-in
+# --------------------------------------------------------------------------- #
+
+
+def test_equality_check_identity_avoids_user_eq():
+    class TouchyEq:
+        def __init__(self, x):
+            self.x = x
+
+        def __eq__(self, other):  # noqa: D401
+            raise RuntimeError("__eq__ should not be called")
+
+        def __hash__(self):
+            return id(self)
+
+    obj = TouchyEq(1)
+    a = Cell(obj, equality_check="identity")
+    a.set(obj)  # same object — short-circuits via `is`, not `==`
+    assert a() is obj
+    a.set(TouchyEq(2))  # different object — set proceeds
+    # We never asked for ==, so RuntimeError must not have been raised.
+
+
+def test_equality_check_callable_short_circuits():
+    a = Cell(1.0, equality_check=lambda old, new: abs(old - new) < 0.5)
+    fired: list = []
+    on_change(a, lambda old, new: fired.append((old, new)))
+    a.set(1.2)  # within 0.5 → no fire
+    assert fired == []
+    a.set(2.0)  # outside 0.5 → fires
+    assert fired == [(1.0, 2.0)]
+
+
+def test_slots_only_class_with_buddhism_nodes_slot_works():
+    class Lean:
+        __slots__ = ("__buddhism_nodes__", "__weakref__")
+
+        a = cell(1)
+
+        @derived
+        def b(self):
+            return self.a * 10
+
+    obj = Lean()
+    assert obj.b == 10
+    obj.a = 7
+    assert obj.b == 70
+
+
+def test_slots_only_class_without_dict_or_nodes_slot_raises():
+    class Doomed:
+        __slots__ = ("__weakref__",)
+
+        a = cell(1)
+
+    obj = Doomed()
+    with pytest.raises(TypeError, match="reactive descriptors"):
+        _ = obj.a
+
+
+def test_unweakreferenceable_class_refuses_by_default():
+    class CantWeak:
+        __slots__ = ("__buddhism_nodes__",)  # no __weakref__
+
+        a = cell(1)
+
+        @derived
+        def b(self):
+            return self.a * 2
+
+    obj = CantWeak()
+    # Reading the cell is fine; reading the Derived needs to capture self.
+    assert obj.a == 1
+    with pytest.raises(TypeError, match="not weak-referenceable"):
+        _ = obj.b
+
+
+def test_unweakreferenceable_class_strong_ref_opt_in():
+    import warnings as _warnings
+
+    class CantWeakOptIn:
+        __slots__ = ("__buddhism_nodes__",)
+        __buddhism_strong_refs__ = True
+
+        a = cell(1)
+
+        @derived
+        def b(self):
+            return self.a * 3
+
+    obj = CantWeakOptIn()
+    with _warnings.catch_warnings(record=True) as w:
+        _warnings.simplefilter("always")
+        assert obj.b == 3
+    assert any(issubclass(x.category, RuntimeWarning) for x in w)

@@ -20,6 +20,7 @@ import weakref
 from buddhism.dukkha import Attachment, observe
 
 from . import __  # noqa: F401
+from buddhism.karma import pure
 
 TITLE = "Clinging — the GC is willing; we hold on."
 
@@ -108,7 +109,9 @@ def _step_observe_diffs_clinging() -> None:
     assert "_Bell" in report.text_report()
 
 
+@pure
 def KOAN() -> None:
+    """Run all steps of this koan; raises AssertionError on first failure."""
     _step_a_lone_object_is_collected()
     _step_a_strong_reference_clings()
     _step_weakref_observes_without_clinging()

@@ -41,4 +41,6 @@ KOAN_ORDER = (
     "k03_non_self",
     "k04_clinging",
     "k05_emptiness",
+    "k06_karma",
+    "k07_three_marks",
 )

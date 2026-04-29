@@ -17,6 +17,7 @@ container for a missing one.
 from __future__ import annotations
 
 from . import __  # noqa: F401
+from buddhism.karma import pure
 
 TITLE = "Emptiness — None is not zero is not False is not []."
 
@@ -104,7 +105,9 @@ def _step_empty_containers_are_still_objects() -> None:
     # The same object — its identity persists across changes in form.
 
 
+@pure
 def KOAN() -> None:
+    """Run all steps of this koan; raises AssertionError on first failure."""
     _step_none_is_a_singleton()
     _step_falsy_is_not_the_same_as_none()
     _step_default_arguments_with_none()

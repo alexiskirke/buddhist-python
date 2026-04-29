@@ -49,6 +49,7 @@ Two ergonomic surfaces:
 from __future__ import annotations
 
 import threading
+import warnings
 import weakref
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -59,16 +60,20 @@ from typing import (
     Generic,
     Iterator,
     List,
+    Literal,
     Optional,
     Tuple,
     TypeVar,
+    Union,
 )
 
+from .karma import pure
 __all__ = [
     "Cell",
     "Derived",
     "Conditioned",
     "SamsaraError",
+    "EqualityCheck",
     "cell",
     "derive",
     "derived",
@@ -122,6 +127,7 @@ def _pop_frame(token: Tuple["_Node", ...]) -> None:
         _eval_stack.set(stack[:-1] or None)
 
 
+@pure
 def current_dependencies() -> Tuple["_Node", ...]:
     """Return the currently-tracking eval-stack of Derived nodes.
 
@@ -143,6 +149,7 @@ _batch_pending: ContextVar[Optional[Dict[int, Tuple["_Node", Any]]]] = ContextVa
 )
 
 
+@pure
 @contextmanager
 def batch() -> Iterator[None]:
     """Defer eager subscriber notifications until the block exits.
@@ -184,6 +191,7 @@ class _Subscription:
         self._callback = callback
 
     def cancel(self) -> None:
+        """Detach this subscription from its node. Idempotent."""
         node = self._node_ref()
         if node is None:
             return
@@ -249,6 +257,17 @@ class _Node:
             sub._callback(old, new)
 
     def _maybe_queue_subscribers(self, old: Any) -> None:
+        # ───────────────────────────────────────────────────────────────────
+        # BATCH INVARIANT (do not simplify without reading)
+        # During a batch, a node's recorded `old` is the value it had at the
+        # moment of the FIRST invalidation in the batch — never an
+        # intermediate value introduced by the cascade. Replacing the
+        # pending entry on later invalidations would break the diamond-
+        # dependency test (test_diamond_dependency_fires_subscriber_exactly_once)
+        # because subscribers would observe a transient "old" they never
+        # actually saw. The "if key not in pending" check is the doctrine
+        # holding the test.
+        # ───────────────────────────────────────────────────────────────────
         if not self._subscribers:
             return
         if _batch_depth.get() > 0:
@@ -269,35 +288,81 @@ class _Node:
 # --------------------------------------------------------------------------- #
 
 
+EqualityCheck = Union[Literal["identity", "equal"], Callable[[Any, Any], bool]]
+
+
+def _resolve_equality_check(check: EqualityCheck) -> Callable[[Any, Any], bool]:
+    if check == "identity":
+        return lambda a, b: a is b
+    if check == "equal":
+        # Try identity fast-path first to avoid invoking user __eq__ on
+        # self-equal sentinels; fall back to ==.
+        return lambda a, b: a is b or a == b
+    if callable(check):
+        return check
+    raise ValueError(
+        f"equality_check must be 'identity', 'equal', or a callable; got {check!r}"
+    )
+
+
 class Cell(_Node, Generic[T]):
     """A mutable source value.
 
     Reading a Cell while a Derived is computing records a dependency.
     Setting a Cell invalidates every Derived that depends on it
     (transitively) and fires any subscribers (respecting batches).
+
+    Parameters
+    ----------
+    value:
+        The initial value.
+    name:
+        Optional debug name (used in :class:`SamsaraError` messages).
+    equality_check:
+        How to decide whether ``set(new)`` is a no-op:
+
+        * ``"equal"`` (default) — uses ``a is b or a == b``. Backwards-
+          compatible with v0.1, but ``__eq__`` may have side effects or
+          raise for some user types.
+        * ``"identity"`` — uses ``a is b`` only. Recommended for objects
+          whose equality is expensive, side-effectful, or undefined.
+        * A callable ``(old, new) -> bool``: returns True when the values
+          should be treated as equal (and ``set`` skipped).
     """
 
-    __slots__ = ("_value", "_name")
+    __slots__ = ("_value", "_name", "_eq")
 
-    def __init__(self, value: T, *, name: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        value: T,
+        *,
+        name: Optional[str] = None,
+        equality_check: EqualityCheck = "equal",
+    ) -> None:
         super().__init__()
         self._value: T = value
         self._name = name
+        self._eq: Callable[[Any, Any], bool] = _resolve_equality_check(equality_check)
 
     # ---- read / write ----
     def get(self) -> T:
+        """Return the current value, recording a dependency edge if read inside
+        a :class:`Derived`'s evaluation."""
         self._track_access()
         return self._value
 
     def set(self, value: T) -> None:
-        # An implicit batch around every set() guarantees that subscriber
-        # callbacks (which may call .get() and thereby re-clean a Derived)
-        # never run during the invalidation cascade. They fire exactly once,
-        # in topological order, after the cascade is complete.
+        """Replace the value and invalidate downstream Derived nodes.
+
+        An implicit batch around every ``set()`` guarantees subscriber
+        callbacks (which may call ``.get()`` and thereby re-clean a Derived)
+        never run during the invalidation cascade. They fire exactly once,
+        in topological order, after the cascade is complete.
+        """
         with batch():
             with self._lock:
                 old = self._value
-                if old is value or old == value:
+                if self._eq(old, value):
                     return
                 self._value = value
                 for dep in list(self._dependents):
@@ -370,6 +435,12 @@ class Derived(_Node, Generic[T]):
 
     # ---- evaluation ----
     def get(self) -> T:
+        """Return the current value, recomputing if dirty.
+
+        Recomputation re-tracks dependencies (calling :func:`_clear_dependencies`
+        first) so a function that branches on its inputs has a self-cleaning
+        edge set.
+        """
         self._track_access()
         if not self._dirty:
             return self._value  # type: ignore[return-value]
@@ -406,6 +477,7 @@ class Derived(_Node, Generic[T]):
 # --------------------------------------------------------------------------- #
 
 
+@pure
 def on_change(node: _Node, callback: Callable[[Any, Any], None]) -> _Subscription:
     """Subscribe ``callback(old, new)`` to changes of a Cell or Derived.
 
@@ -426,6 +498,7 @@ def on_change(node: _Node, callback: Callable[[Any, Any], None]) -> _Subscriptio
 # --------------------------------------------------------------------------- #
 
 
+@pure
 def derive(fn: Optional[Callable[[], T]] = None, *, name: Optional[str] = None):
     """Create a Derived value from a zero-arg callable.
 
@@ -456,32 +529,92 @@ def derive(fn: Optional[Callable[[], T]] = None, *, name: Optional[str] = None):
 _NODES_ATTR = "__buddhism_nodes__"
 
 
+def _class_has_nodes_slot(cls: type) -> bool:
+    """Return True if ``_NODES_ATTR`` is defined as a slot anywhere in MRO.
+
+    We test for a member-descriptor on the class hierarchy rather than calling
+    ``getattr`` on the instance, so we don't accidentally pick up an instance
+    attribute that happens to be named the same.
+    """
+    for base in cls.__mro__:
+        slot = base.__dict__.get(_NODES_ATTR)
+        if slot is not None and not callable(slot):
+            return True
+    return False
+
+
 def _instance_nodes(instance: object) -> dict:
-    nodes = instance.__dict__.get(_NODES_ATTR)
+    """Return the per-instance ``{name: Node}`` dict, materialising it lazily.
+
+    Storage strategy, in order of preference:
+
+    1. If the class declares ``__buddhism_nodes__`` in ``__slots__``, use that
+       slot. (The cleanest path for ``__slots__``-only classes.)
+    2. Otherwise, store on ``instance.__dict__``.
+    3. If the instance has neither, raise :class:`TypeError` with a clear
+       remediation hint.
+    """
+    cls = type(instance)
+    if _class_has_nodes_slot(cls):
+        try:
+            nodes = getattr(instance, _NODES_ATTR)
+        except AttributeError:
+            nodes = None
+        if nodes is None:
+            nodes = {}
+            object.__setattr__(instance, _NODES_ATTR, nodes)
+        return nodes  # type: ignore[no-any-return]
+
+    try:
+        instance_dict = instance.__dict__
+    except AttributeError as e:
+        cls_name = cls.__name__
+        raise TypeError(
+            f"{cls_name!r} declares __slots__ without __dict__ and without "
+            f"a {_NODES_ATTR!r} slot, so reactive descriptors have nowhere "
+            f"to store per-instance graph state. Either add {_NODES_ATTR!r} "
+            f"to __slots__, allow __dict__, or do not use cell()/@derived "
+            f"on this class."
+        ) from e
+
+    nodes = instance_dict.get(_NODES_ATTR)
     if nodes is None:
         nodes = {}
-        # Avoid triggering __setattr__ if the user has overridden it.
-        object.__setattr__(instance, _NODES_ATTR, nodes)
+        instance_dict[_NODES_ATTR] = nodes
     return nodes
 
 
-class _CellDescriptor(Generic[T]):
-    """Descriptor that materialises a per-instance ``Cell`` on first access."""
+class _DescriptorBase:
+    """Common machinery for cell/derived descriptors."""
 
-    __slots__ = ("_default", "_attr_name")
+    __slots__ = ("_attr_name",)
 
-    def __init__(self, default: T) -> None:
-        self._default: T = default
+    def __init__(self) -> None:
         self._attr_name: Optional[str] = None
 
     def __set_name__(self, owner: type, name: str) -> None:
         self._attr_name = name
 
+
+class _CellDescriptor(_DescriptorBase, Generic[T]):
+    """Descriptor that materialises a per-instance ``Cell`` on first access."""
+
+    __slots__ = ("_default", "_equality_check")
+
+    def __init__(self, default: T, *, equality_check: EqualityCheck = "equal") -> None:
+        super().__init__()
+        self._default: T = default
+        self._equality_check: EqualityCheck = equality_check
+
     def _get_cell(self, instance: object) -> Cell:
         nodes = _instance_nodes(instance)
         cell_obj = nodes.get(self._attr_name)
         if cell_obj is None:
-            cell_obj = Cell(self._default, name=self._attr_name)
+            cell_obj = Cell(
+                self._default,
+                name=self._attr_name,
+                equality_check=self._equality_check,
+            )
             nodes[self._attr_name] = cell_obj
         return cell_obj
 
@@ -494,28 +627,31 @@ class _CellDescriptor(Generic[T]):
         self._get_cell(instance).set(value)
 
 
-class _DerivedDescriptor(Generic[T]):
+class _DerivedDescriptor(_DescriptorBase, Generic[T]):
     """Descriptor that materialises a per-instance ``Derived`` on first access.
 
     The wrapped function takes ``self`` as its only argument; we adapt it
     into a zero-arg closure for the underlying Derived.
+
+    Non-clinging invariant
+    ----------------------
+    The bound closure captures ``self`` via :func:`weakref.ref` so the
+    descriptor does not keep the instance alive. If the instance is not
+    weak-referenceable, the descriptor *refuses* by default and raises
+    :class:`TypeError`. To opt into strong-ref behaviour explicitly, set
+    ``__buddhism_strong_refs__ = True`` on the class.
     """
 
-    __slots__ = ("_fn", "_attr_name")
+    __slots__ = ("_fn",)
 
     def __init__(self, fn: Callable[[Any], T]) -> None:
+        super().__init__()
         self._fn: Callable[[Any], T] = fn
-        self._attr_name: Optional[str] = None
-
-    def __set_name__(self, owner: type, name: str) -> None:
-        self._attr_name = name
 
     def _get_derived(self, instance: object) -> Derived:
         nodes = _instance_nodes(instance)
         node = nodes.get(self._attr_name)
         if node is None:
-            # Capture instance via weakref where possible to avoid the
-            # descriptor making the instance immortal through its closure.
             try:
                 weak_self = weakref.ref(instance)
 
@@ -528,7 +664,22 @@ class _DerivedDescriptor(Generic[T]):
                         )
                     return self._fn(self_)
             except TypeError:
-                # Not weakly referenceable; fall back to strong ref.
+                if not getattr(type(instance), "__buddhism_strong_refs__", False):
+                    raise TypeError(
+                        f"{type(instance).__name__!r} is not weak-referenceable, "
+                        f"so the reactive graph would have to keep its instances "
+                        f"alive (clinging). Either add '__weakref__' to __slots__, "
+                        f"or opt into strong-ref mode by setting "
+                        f"'__buddhism_strong_refs__ = True' on the class."
+                    )
+                warnings.warn(
+                    f"{type(instance).__name__!r}: strong-ref Derived (instance "
+                    f"is not weak-referenceable). The reactive graph will keep "
+                    f"this instance alive.",
+                    RuntimeWarning,
+                    stacklevel=3,
+                )
+
                 def _bound() -> Any:
                     return self._fn(instance)
 
@@ -548,15 +699,19 @@ class _DerivedDescriptor(Generic[T]):
         )
 
 
-def cell(default: T) -> Any:
+@pure
+def cell(default: T, *, equality_check: EqualityCheck = "equal") -> Any:
     """Class-attribute factory for a reactive Cell.
 
     Type-erased to ``Any`` so that ``self.attr`` reads as the underlying
     value type to the type-checker.
+
+    See :class:`Cell` for the meaning of ``equality_check``.
     """
-    return _CellDescriptor(default)
+    return _CellDescriptor(default, equality_check=equality_check)
 
 
+@pure
 def derived(fn: Callable[[Any], T]) -> Any:
     """Class-attribute decorator for a Derived value (takes ``self``)."""
     return _DerivedDescriptor(fn)
@@ -565,14 +720,16 @@ def derived(fn: Callable[[Any], T]) -> Any:
 class Conditioned:
     """Optional base class for objects whose attributes are reactive.
 
-    You don't strictly need to inherit from this — the ``cell()`` and
-    ``derived`` descriptors work on any class — but inheriting makes the
-    intent explicit and provides a tiny convenience: a way to introspect
-    the per-instance graph.
+    Inheriting from ``Conditioned`` is the most ergonomic path: it gives the
+    instance ``__dict__`` and ``__weakref__`` slots, plus introspection via
+    :meth:`__pratitya_nodes__`. The descriptors *can* work on classes that
+    do not inherit from ``Conditioned``, provided those classes have either
+    a ``__dict__`` or a ``__buddhism_nodes__`` slot, and are
+    weak-referenceable (or opt into strong-ref mode).
     """
 
     __slots__ = ("__dict__", "__weakref__")
 
     def __pratitya_nodes__(self) -> dict:
-        """Return the live graph of nodes for this instance."""
+        """Return a snapshot of the live graph of nodes for this instance."""
         return dict(_instance_nodes(self))

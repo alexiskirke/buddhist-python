@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+__cli__ = True
+
 import argparse
 import sys
 
 from ._runner import run
+from buddhism.karma import pure
 
 
+@pure
 def main() -> int:
+    """Entry point for ``python -m buddhism.koans``."""
     parser = argparse.ArgumentParser(
         prog="buddhism.koans",
         description="Walk the buddhism-python tutorial koans in order.",

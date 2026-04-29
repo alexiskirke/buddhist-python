@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "buddhist-python"
-version = "0.1.0"
-description = "Buddhist concepts as load-bearing Python infrastructure: reactive dependency graphs, clinging/retention profiling, and a koans tutorial track."
+version = "0.2.0"
+description = "Buddhist concepts as load-bearing Python infrastructure: reactive dependency graphs, retention profiling, decay containers, side-effect ledger, structural identity tools, runtime introspection, and a project-quality checker."
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Alexis Kirke" }]
@@ -47,6 +47,17 @@ Issues = "https://github.com/alexiskirke/buddhist-python/issues"
 
 [project.scripts]
 koans = "buddhism.koans.__main__:main"
+buddhism-path = "buddhism.path.cli:_main"
+
+[tool.buddhism.path]
+type_coverage_threshold = 0.80
+# Heuristic ratio (test files / source files) until `coverage` is wired in.
+# Real line coverage will replace this in v0.3.
+test_coverage_threshold = 0.50
+max_complexity = 25
+# The package eats its own dog food: every module-level public function
+# carries an effect-naming decorator (let_go / karmic / impermanent / pure).
+enable_right_mindfulness = true
 
 [tool.setuptools.packages.find]
 where = ["src"]

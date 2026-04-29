@@ -10,6 +10,9 @@ When all koans pass, prints a final mark.
 
 from __future__ import annotations
 
+# This module is the koan runner CLI; its print() calls are intentional.
+__cli__ = True
+
 import importlib
 import sys
 import traceback
@@ -17,6 +20,7 @@ from types import ModuleType
 from typing import List, Tuple
 
 from . import KOAN_ORDER
+from buddhism.karma import pure
 
 _BANNER_TOP = "─" * 72
 _BANNER_BOT = "─" * 72
@@ -55,7 +59,13 @@ def _format_failure(koan_name: str, mod: ModuleType, exc: BaseException) -> str:
     return "\n".join(out)
 
 
+@pure
 def run(only: List[str] = None) -> int:
+    """Run the koans in order. Stops at the first failure.
+
+    Returns ``0`` on success, ``1`` on the first failed koan, ``2`` on
+    a setup error.
+    """
     targets: Tuple[str, ...] = tuple(only) if only else KOAN_ORDER
     completed = 0
     for name in targets:

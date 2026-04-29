@@ -1,11 +1,9 @@
 # buddhist-python
 
-> *"When this is, that is. From the arising of this, that arises."*
-> — Saṃyutta Nikāya 12.61
-
-Buddhist concepts as **load-bearing** Python infrastructure — not a rename
-layer, but a small set of doctrinal ideas implemented at the deepest leverage
-points of the language.
+A Python package providing **a reactive dependency graph, a retention
+profiler, decay containers, a side-effect ledger, structural identity
+tools, runtime three-marks introspection, and a project-quality
+checker** — dependency-free, in roughly 2,000 lines of Python.
 
 ```python
 from buddhism import Conditioned, cell, derived
@@ -16,10 +14,8 @@ class Invoice(Conditioned):
     tax_rate   = cell(0.20)
 
     @derived
-    def subtotal(self): return self.quantity * self.unit_price
-
-    @derived
-    def total(self):    return self.subtotal * (1 + self.tax_rate)
+    def total(self):
+        return self.quantity * self.unit_price * (1 + self.tax_rate)
 
 inv = Invoice()
 inv.total          # 12.0
@@ -29,27 +25,14 @@ inv.total          # 60.0  ← arose anew from the new conditions
 
 No manual recompute. No invalidation flags. No publish/subscribe ceremony.
 The values arise from their conditions and re-arise when the conditions
-change. That's it.
+change.
 
----
-
-## Why this exists
-
-Most "philosophy-themed" libraries rename a `for` loop and call it
-enlightenment. This package picks four ideas from Buddhist philosophy that
-already correspond, *technically*, to specific things Python can do:
-
-| Doctrine                     | Python primitive                         | Module                             |
-|------------------------------|------------------------------------------|------------------------------------|
-| **Pratītyasamutpāda**<br>*Dependent Origination* | descriptors + auto-tracked dependency graph | [`buddhism.pratitya`](#1-pratitya--dependent-origination) |
-| **Dukkha**<br>*Clinging / unsatisfactoriness* | `gc` + `weakref` retention analysis | [`buddhism.dukkha`](#2-dukkha--the-profiler-of-clinging) |
-| **Anitya**<br>*Impermanence* | TTL containers, decay caches *(v0.2)*   | `buddhism.anitya` *(roadmap)*      |
-| **Anatta**<br>*Non-self*    | identity / equality / `__dict__`         | taught in [Koan 03](#3-koans--a-tutorial-track) |
-
-The thesis: a value defined by relationships, a leak defined as clinging,
-and a tutorial that teaches both Python internals and the corresponding
-philosophy — that's a coherent, useful, and *honestly* Buddhist Python
-package.
+> The doctrinal labels (Buddhist concepts) are how the package's pieces
+> are *named* — they map one-to-one to the engineering primitives. The
+> mapping is load-bearing, not decorative. See
+> [§ Doctrinal mapping](#doctrinal-mapping-the-design-philosophy) below
+> if you'd like to read the design as philosophy. The rest of this
+> README reads it as engineering.
 
 ---
 
@@ -63,11 +46,26 @@ Python 3.9+. No runtime dependencies.
 
 ---
 
-## 1. `pratitya` — Dependent Origination
+## What's in the box
 
-A reactive dependency graph. Two surfaces:
+| Module                                  | What it does                                                      |
+|-----------------------------------------|--------------------------------------------------------------------|
+| [`pratitya`](#1-pratitya--reactive-dependency-graph) | Reactive dependency graph (descriptors + auto-tracking + weakref). |
+| [`dukkha`](#2-dukkha--retention-profiler) | Retention profiler (`gc` + `weakref` + Tarjan SCC).               |
+| [`anitya`](#3-anitya--decay-containers-and-validity-windows) | `DecayDict`, `@impermanent`, `MemoryPressureRegistry`.            |
+| [`anatta`](#4-anatta--structural-identity-tools) | `StructuralEq`, `without_self`, `diff`.                            |
+| [`karma`](#5-karma--side-effect-ledger) | `@karmic` traces globals/IO/arg-mutations; `KarmicViolation`.     |
+| [`examine`](#6-examine--three-marks-introspection) | `examine(obj)` — three orthogonal views of any Python object.     |
+| [`buddhism.path`](#7-buddhismpath--project-quality-checker) | CLI: 8 quality checks against a target package.                   |
+| [`koans`](#8-koans--guided-tutorial)    | Seven runnable lessons pairing each module with a Python internal. |
 
-### Standalone signals
+---
+
+## 1. `pratitya` — reactive dependency graph
+
+Two surfaces.
+
+**Standalone signals:**
 
 ```python
 from buddhism import Cell, derive
@@ -79,7 +77,7 @@ c()                                # 3
 a.set(10);  c()                    # 12
 ```
 
-### Class-attribute descriptors (the spreadsheet form)
+**Class-attribute descriptors (the spreadsheet form):**
 
 ```python
 from buddhism import Conditioned, cell, derived, on_change, batch
@@ -98,173 +96,310 @@ t.base = 6
 t.area                # 12.0
 ```
 
-### What's actually deep about it
+The deep features:
 
-* **Auto-tracked dependencies via `ContextVar`.** Reading a `Cell` while a
-  `Derived` is being evaluated records an edge. Two updates to two different
-  conditions don't double-count: the dependency set is rebuilt on each
-  recomputation, so dead branches stop counting.
-
-* **Pull-based, with eager subscribers.** `Derived` values are dirty-flagged
-  on invalidation and only recomputed when read. `on_change(node, callback)`
-  gives you eager notification *if* you want it. You don't pay for
-  subscribers you didn't ask for.
-
-* **The graph itself does not cling.** Edges from a `Cell` to its dependents
-  are stored in a `WeakSet`. If your `Derived` becomes unreachable, the GC
-  collects it, and the cell's edge dies with it — no manual unsubscribe.
-
-* **Dynamic, not declared.** `chosen` only depends on `b` while `a` is True;
-  flip `a` and the graph reorganises. Conditions change; relationships change.
-
-* **Conditional cycles raise `SamsaraError`.** A → B → A has no still point
-  at which to assign a value, and we say so out loud.
-
-* **`with batch():`** coalesces multiple writes so each subscriber fires at
-  most once, with the correct *before* and *after* values, after the cascade
-  completes.
-
-```python
-with batch():
-    inv.quantity   = 10
-    inv.unit_price = 25
-    inv.discount   = 0.10
-# subscriber on `inv.total` fires once, with the pre-batch and post-batch totals
-```
+* **Auto-tracking** via `ContextVar` records edges as a function reads
+  its inputs; the dependency set is rebuilt on each recomputation, so
+  conditional branches don't accumulate dead edges.
+* **Pull-based** evaluation with eager subscribers (`on_change`) only
+  if you ask for them.
+* **Non-clinging by construction**: edges from `Cell` to its dependents
+  live in a `WeakSet` — a `Derived` becoming unreachable is collected
+  and silently disappears from the graph.
+* **`with batch():`** coalesces multiple writes; each subscriber fires
+  at most once, with the correct *before* and *after* values, after
+  the cascade completes.
+* **`SamsaraError`** on circular dependencies (A → B → A has no still
+  point at which to assign a value).
+* **`equality_check`** parameter lets you opt into identity-only
+  comparison for objects with expensive or side-effectful `__eq__`.
+* **`__slots__`-only classes** are supported (declare `__buddhism_nodes__`
+  in `__slots__`); a class that is not weak-referenceable must explicitly
+  opt into strong-ref mode via `__buddhism_strong_refs__ = True`.
 
 ---
 
-## 2. `dukkha` — The profiler of clinging
+## 2. `dukkha` — retention profiler
 
-> *We don't fail to release because objects refuse — we hold them ourselves.
-> The garbage collector is willing.*
-
-A practical leak detector built on `gc` + `weakref`.
-
-### `observe()` — diff live objects across a block
+In Python, *clinging* is the technical name for: reference cycles you
+didn't mean to create, caches that keep growing, closures that capture
+more than they should, and listeners that outlive their listened-to.
+The garbage collector is willing to let go; we are the ones holding on.
 
 ```python
-from buddhism.dukkha import observe
+from buddhism import observe, let_go, find_cycles, retention_path
 
+# observe() — diff live objects across a block
 with observe() as report:
     do_some_work()
-
 print(report.text_report())
-# 7 object(s) retained after the block. (0 reference cycle(s) detected.)
-#
-# Top retained types:
-#     5  Document
-#     2  set
+
+# @let_go — assert a function does not retain its inputs (transitive
+# retention through the *return value* is fine; named arguments can
+# be allow-listed for constructors that legitimately keep inputs)
+@let_go(allow={"config"})
+def __init__(self, config, *, debug=False):
+    self.config = config
+
+# find_cycles — strongly-connected components in your candidate set
+cycles = find_cycles([a, b, c])
+
+# retention_path — one path of clinging, root → object
+path = retention_path(att.get())
+print(path.format())
 ```
 
-### `@let_go` — assert a function does not retain its inputs
-
-```python
-from buddhism.dukkha import let_go
-
-@let_go
-def pure(d): return d.title.upper()      # OK
-
-@let_go
-def leaky(d): cache.append(d)            # raises ClingingDetected
-```
-
-### `find_cycles` — strongly-connected components in your object set
-
-```python
-cycles = find_cycles([a, b, c])          # [[a, b, c]] for a → b → c → a
-```
-
-### `retention_path` — *who* is holding this?
-
-```python
-att = Attachment(doc)
-del doc; gc.collect()
-if att.alive:
-    for i, obj in enumerate(retention_path(att.get())):
-        print(f"  [{i}] {type(obj).__name__:>16}  {obj!r:.60}")
-# [0]             type  <class '__main__.Document'>
-# [1]             dict  ...
-# [2]             list  ...
-# [3]         Document  <__main__.Document object at 0x…>
-```
-
-You read it from the root down to the bottom. That's the *thread of
-clinging*.
+The cross-module bridge: `RetentionReport.pratitya_breakdown()` summarises
+*reactive-graph nodes* among the retained objects, so a leaking dependency
+graph reports its shape, not just its count.
 
 ---
 
-## 3. `koans` — a tutorial track
+## 3. `anitya` — decay containers and validity windows
 
-Five short modules pair one Buddhist concept with one deep Python feature
-as a series of small, runnable assertions:
+Time as a first-class primitive. Three tools.
 
-| | |
-|---|---|
-| **01** | **Impermanence** — mutation, aliasing, the mutable-default-argument trap |
-| **02** | **Dependent Origination** — `pratitya` in anger |
-| **03** | **Non-Self** — identity vs equality, `__dict__`, descriptors |
-| **04** | **Clinging** — `weakref`, `gc`, `dukkha` |
-| **05** | **Emptiness** — `None`, sentinels, falsy values |
+**`DecayDict` / `DecaySet`** — *staleness as a continuous gradient*, not a
+binary alive/dead flag:
 
-Run the whole track:
+```python
+from buddhism import DecayDict
+
+cache: DecayDict[str, dict] = DecayDict(half_life=60.0)
+cache.set("user:42", {"name": "Alice"})
+value, confidence = cache.get("user:42")
+# After 60s, confidence == 0.5; after 120s, 0.25; eventually evicted.
+```
+
+**`@impermanent(validity)`** — declare a function whose return value has
+a validity window. Past the window, you get back a `Stale[T]` that
+demands an explicit decision:
+
+```python
+from buddhism import impermanent, Stale, StalenessError
+
+@impermanent(validity=30.0)
+def fetch_rate() -> float:
+    return external_api.get_rate()
+
+result = fetch_rate()
+# Inside 30s: returns float directly.
+# After 30s:
+match result:
+    case Stale(): result = result.refresh()   # re-call
+    # or:
+    # result = result.accept_stale()           # explicit acknowledgement
+    # or just bare access — that raises StalenessError, by design.
+```
+
+**`MemoryPressureRegistry`** — drop-on-load registry built on
+`weakref.finalize`, releasing in priority order under memory pressure.
+
+---
+
+## 4. `anatta` — structural identity tools
+
+```python
+from buddhism import StructuralEq, without_self, diff
+
+# Value semantics on demand
+class Point(StructuralEq):
+    def __init__(self, x, y):
+        self.x = x; self.y = y
+
+Point(1, 2) == Point(1, 2)        # True (same configuration)
+Point(1, 2) is Point(1, 2)        # False (distinct objects)
+{Point(1, 2), Point(1, 2)}        # set of size 1
+
+# Methods as pure functions over an explicit state
+class Counter:
+    def step(self, k): return self.n + k
+
+pure_step = without_self(Counter.step)
+pure_step({"n": 10}, 5)           # 15 — no instance needed
+
+# A diff that distinguishes "mutated" from "replaced"
+d = diff(a, b)
+d.same_identity        # a is b
+d.same_configuration   # public attrs equal
+d.field_changes        # {name: (a_value, b_value)}
+d.summary()            # 'mutated: same object, 2 field(s) changed'
+```
+
+---
+
+## 5. `karma` — side-effect ledger
+
+```python
+from buddhism import karmic, KarmicViolation
+
+@karmic
+def update_record(record, value):
+    record["v"] = value
+    return record["v"]
+
+result, ledger = update_record({"v": 0}, 7)
+ledger.arg_mutations   # {0: ({'v': 0}, {'v': 7})}
+ledger.is_pure()       # False
+```
+
+The ledger names every observed side effect: globals **read**, globals
+**written**, **I/O events** (file open / socket connect / subprocess),
+arguments **mutated** by reference. Read-tracking is best-effort
+(CPython 3.11+ inline-caches LOAD_GLOBAL); write-tracking is reliable.
+
+**Strict mode** turns the ledger into a contract:
+
+```python
+@karmic(allow={"global:cache"})
+def lookup(key):
+    if key in cache: return cache[key]   # OK
+    cache[key] = fetch(key)               # OK (allow-listed)
+    return cache[key]
+
+@karmic(allow=set())
+def vow_of_purity(x):
+    return x * 2          # OK
+    # any global write or I/O event raises KarmicViolation
+```
+
+**Debt** lets test suites assert maximum unacknowledged side-effect
+budgets across a suite of calls.
+
+---
+
+## 6. `examine` — Three Marks introspection
+
+A single function that returns three orthogonal views of any object:
+
+```python
+from buddhism import examine
+
+class Sheet(Conditioned):
+    a = cell(1)
+
+    @derived
+    def b(self): return self.a * 2
+
+s = Sheet()
+print(examine(s).text_report())
+# examine(<__main__.Sheet object at 0x…>)
+#
+#   Anitya — change over time:
+#     (no time-relevant decoration found)
+#
+#   Dukkha — what is clinging:
+#     alive:                 True
+#     direct referrers:      1
+#     referrer types:        dict
+#     reactive subscribers:  0
+#
+#   Anatta — configuration of conditions:
+#     type:                  Sheet
+#     public attrs (3):      ['a', 'b', '__buddhism_nodes__']
+#     reactive dependencies: ['a', 'b']
+#     pure form:             available via without_self()
+```
+
+The output is *progressively richer* as the object adopts more of the
+package's primitives.
+
+---
+
+## 7. `buddhism.path` — project-quality checker
+
+A CLI that audits a target package against eight checks:
+
+```bash
+$ python -m buddhism.path
+buddhism path examined .../src/buddhism
+
+  ✓ Right View            type coverage 92% (threshold 80%)
+  ✓ Right Intention       81/81 public functions documented
+  ✓ Right Speech          no print() calls in library code
+  ✓ Right Action          no unmarked argument mutations
+  ✓ Right Livelihood      pure modules touched no I/O
+  ✓ Right Effort          test-file ratio 50% (8 tests / 16 src; threshold 50%)
+  ✓ Right Mindfulness     30/30 module-level public functions decorated
+  ✓ Right Concentration   max complexity 25
+
+  8/8 path factors satisfied. The path is complete.
+```
+
+Each check is concretely engineering:
+
+| Step                      | Check                                              |
+|---------------------------|---------------------------------------------------|
+| Right View                | type-annotation density above threshold            |
+| Right Intention           | every public function carries a docstring          |
+| Right Speech              | no `print()` in library code                       |
+| Right Action              | no unmarked argument mutation                      |
+| Right Livelihood          | no I/O in modules declaring `__pure__ = True`      |
+| Right Effort              | test coverage threshold                            |
+| Right Mindfulness         | every public function tagged with an effect-decorator |
+| Right Concentration       | cyclomatic complexity below threshold              |
+
+Configurable via `[tool.buddhism.path]` in `pyproject.toml`. Output
+in JSON via `--json` for CI. The package eats its own dog food.
+
+---
+
+## 8. `koans` — guided tutorial
+
+Seven runnable lessons pairing each Buddhist concept with one deep
+Python feature:
 
 ```bash
 python -m buddhism.koans
-# ✓ k01_impermanence
-# ✓ k02_dependent_origination
-# ✓ k03_non_self
-# ✓ k04_clinging
-# ✓ k05_emptiness
+# ✓ k01_impermanence       mutation, aliasing, default-arg trap
+# ✓ k02_dependent_origination  descriptors + reactive graph
+# ✓ k03_non_self            identity, equality, __dict__
+# ✓ k04_clinging            weakref, gc, retention
+# ✓ k05_emptiness           None, sentinels, falsy values
+# ✓ k06_karma               globals tracking, I/O patches, snapshots
+# ✓ k07_three_marks         examine() across all primitives
 #
 # All koans completed.
 ```
 
-The koans are *passing by default* — they're a guided tour. To turn them
-into self-tests, replace any literal answer with `__` (imported from
-`buddhism.koans`) and re-run:
-
-```python
-# k01_impermanence.py
-def _step_rebind_does_not_mutate():
-    a = [1, 2, 3]
-    b = a
-    a = a + [4]
-    assert b == __     # ← replace with the right answer
-```
-
-The runner stops at the first failure, prints the file:line, and shows
-the koan's hint.
+Passing by default — they're a guided tour. To turn them into self-tests,
+replace any literal answer with `__` (imported from `buddhism.koans`)
+and re-run; the runner stops at the first failure with the koan's hint.
 
 ---
 
 ## Examples
 
 ```bash
-python examples/reactive_spreadsheet.py     # invoice with cascading recompute
-python examples/reactive_config.py          # config object whose derived paths re-arise
-python examples/leak_detection.py           # observe(), @let_go, find_cycles, retention_path
+python examples/reactive_spreadsheet.py     # cascading recompute
+python examples/reactive_config.py          # config whose derivations re-arise
+python examples/leak_detection.py           # observe(), @let_go, find_cycles
 ```
 
 ---
 
-## Roadmap
+## Doctrinal mapping (the design philosophy)
 
-**v0.1** *(this release)* — Dependent Origination, Clinging, Koans.
+| Doctrine                      | Engineering primitive                         | Module               |
+|-------------------------------|-----------------------------------------------|----------------------|
+| **Pratītyasamutpāda** (dependent origination) | reactive dependency graph                  | `pratitya`           |
+| **Dukkha** (clinging)         | retention profiler                            | `dukkha`             |
+| **Anitya** (impermanence)     | decay containers, validity windows            | `anitya`             |
+| **Anatta** (non-self)         | structural identity, pure-form transformation | `anatta`             |
+| **Karma**                     | side-effect ledger                            | `karma`              |
+| **Three Marks**               | runtime introspection across all three        | `examine`            |
+| **Eightfold Path**            | project-quality discipline                    | `buddhism.path`      |
 
-**v0.2** — *Anitya*, the policy layer of impermanence:
+Each row is a one-to-one mapping. No module is a renamed standard utility;
+each one uses Python's deepest leverage points (descriptors, `gc`,
+`weakref`, `ContextVar`, AST analysis, runtime patching). If you couldn't
+justify the entry as engineering, it didn't ship.
 
-* TTL-decay containers
-* LRU-with-forgetting
-* memory-pressure "letting-go" (drop-on-load)
-
-**v0.3** — *Karma*, side-effect auditing:
-
-* AST/bytecode purity analysis
-* per-function "karmic debt" report (which globals were touched, which I/O occurred)
-* opt-in enforcement decorator
-
-**v0.4** — *Anatta* tools: structural-equality types, identity-aware hashing.
+The point of the package is that *the labels are the most economical way
+of naming the design*, not a layer of paint. Two thousand five hundred
+years ago, four contemplatives looked carefully at how things actually
+work, and most of what they noticed has direct, useful Python analogues.
+This package takes those analogues seriously enough to write them down.
 
 ---
 
@@ -273,11 +408,12 @@ python examples/leak_detection.py           # observe(), @let_go, find_cycles, r
 1. **Doctrinal, not decorative.** Every Buddhist term in the public API
    maps to a real Python primitive. If we couldn't justify it as engineering,
    we didn't ship it.
-2. **Non-clinging by default.** The library itself uses `WeakSet` and
-   `weakref` so its own data structures don't become a source of dukkha.
-3. **Pure-Python, no dependencies.** Should work the same on CPython 3.9+
-   on every platform.
-4. **Tests are the doctrine.** See `tests/`.
+2. **Non-clinging by default.** The library uses `WeakSet` and `weakref`
+   throughout so its own data structures don't become a source of dukkha.
+3. **Pure-Python, no dependencies.** Same behaviour on CPython 3.9+ on
+   every platform.
+4. **Eats its own dog food.** `python -m buddhism.path` returns 8/8 on
+   `buddhism` itself.
 
 ---
 
@@ -286,8 +422,9 @@ python examples/leak_detection.py           # observe(), @let_go, find_cycles, r
 PRs welcome. Especially:
 
 * additional koans (one new Buddhist concept paired with one deep Python feature)
-* corner-case tests for `pratitya` (cycles, threading, asyncio)
+* corner-case tests for the reactive graph (cycles, threading, asyncio)
 * visualisation of retention graphs in `dukkha`
+* a real `coverage` integration in `buddhism.path`'s Right Effort check
 
 ---
 

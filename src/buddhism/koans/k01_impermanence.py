@@ -20,6 +20,7 @@ To self-test, replace any literal answer below with ``__`` (imported from
 from __future__ import annotations
 
 from . import __  # noqa: F401  (used when the student blanks out an answer)
+from buddhism.karma import pure
 
 TITLE = "Impermanence — what changes, and what changes about what changes."
 
@@ -77,7 +78,9 @@ def _step_default_argument_keeps_arising() -> None:
     assert first == [1, 2]
 
 
+@pure
 def KOAN() -> None:
+    """Run all steps of this koan; raises AssertionError on first failure."""
     _step_rebind_does_not_mutate()
     _step_mutation_propagates_through_aliases()
     _step_immutables_cannot_be_mutated()
