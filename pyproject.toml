@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "buddhist-python"
+version = "0.1.0"
+description = "Buddhist concepts as load-bearing Python infrastructure: reactive dependency graphs, clinging/retention profiling, and a koans tutorial track."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Alexis Kirke" }]
+requires-python = ">=3.9"
+keywords = [
+    "reactive",
+    "dependency-graph",
+    "memory-profiler",
+    "leak-detector",
+    "weakref",
+    "descriptors",
+    "buddhism",
+    "koans",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Debuggers",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+]
+
+[project.urls]
+Homepage = "https://github.com/alexiskirke/buddhist-python"
+Repository = "https://github.com/alexiskirke/buddhist-python"
+Issues = "https://github.com/alexiskirke/buddhist-python/issues"
+
+[project.scripts]
+koans = "buddhism.koans.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+buddhism = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
