@@ -1,9 +1,8 @@
 # buddhist-python
 
-A Python package providing **a reactive dependency graph, a retention
-profiler, decay containers, a side-effect ledger, structural identity
-tools, runtime three-marks introspection, and a project-quality
-checker** — dependency-free, in roughly 2,000 lines of Python.
+A Python package providing **decay containers, a side-effect ledger, structural identity
+tools, a reactive dependency graph, a retention profiler,  runtime three-marks introspection, 
+and a project-quality checker** — dependency-free, in roughly 2,000 lines of Python.
 
 ```python
 from buddhism import Conditioned, cell, derived
@@ -61,7 +60,120 @@ Python 3.9+. No runtime dependencies.
 
 ---
 
-## 1. `pratitya` — reactive dependency graph
+## 1. `anitya` — decay containers and validity windows
+
+Time as a first-class primitive. Three tools.
+
+**`DecayDict` / `DecaySet`** — *staleness as a continuous gradient*, not a
+binary alive/dead flag:
+
+```python
+from buddhism import DecayDict
+
+cache: DecayDict[str, dict] = DecayDict(half_life=60.0)
+cache.set("user:42", {"name": "Alice"})
+value, confidence = cache.get("user:42")
+# After 60s, confidence == 0.5; after 120s, 0.25; eventually evicted.
+```
+
+**`@impermanent(validity)`** — declare a function whose return value has
+a validity window. Past the window, you get back a `Stale[T]` that
+demands an explicit decision:
+
+```python
+from buddhism import impermanent, Stale, StalenessError
+
+@impermanent(validity=30.0)
+def fetch_rate() -> float:
+    return external_api.get_rate()
+
+result = fetch_rate()
+# Inside 30s: returns float directly.
+# After 30s:
+match result:
+    case Stale(): result = result.refresh()   # re-call
+    # or:
+    # result = result.accept_stale()           # explicit acknowledgement
+    # or just bare access — that raises StalenessError, by design.
+```
+
+**`MemoryPressureRegistry`** — drop-on-load registry built on
+`weakref.finalize`, releasing in priority order under memory pressure.
+
+---
+
+## 2. `anatta` — structural identity tools
+
+```python
+from buddhism import StructuralEq, without_self, diff
+
+# Value semantics on demand
+class Point(StructuralEq):
+    def __init__(self, x, y):
+        self.x = x; self.y = y
+
+Point(1, 2) == Point(1, 2)        # True (same configuration)
+Point(1, 2) is Point(1, 2)        # False (distinct objects)
+{Point(1, 2), Point(1, 2)}        # set of size 1
+
+# Methods as pure functions over an explicit state
+class Counter:
+    def step(self, k): return self.n + k
+
+pure_step = without_self(Counter.step)
+pure_step({"n": 10}, 5)           # 15 — no instance needed
+
+# A diff that distinguishes "mutated" from "replaced"
+d = diff(a, b)
+d.same_identity        # a is b
+d.same_configuration   # public attrs equal
+d.field_changes        # {name: (a_value, b_value)}
+d.summary()            # 'mutated: same object, 2 field(s) changed'
+```
+
+---
+
+## 3. `karma` — side-effect ledger
+
+```python
+from buddhism import karmic, KarmicViolation
+
+@karmic
+def update_record(record, value):
+    record["v"] = value
+    return record["v"]
+
+result, ledger = update_record({"v": 0}, 7)
+ledger.arg_mutations   # {0: ({'v': 0}, {'v': 7})}
+ledger.is_pure()       # False
+```
+
+The ledger names every observed side effect: globals **read**, globals
+**written**, **I/O events** (file open / socket connect / subprocess),
+arguments **mutated** by reference. Read-tracking is best-effort
+(CPython 3.11+ inline-caches LOAD_GLOBAL); write-tracking is reliable.
+
+**Strict mode** turns the ledger into a contract:
+
+```python
+@karmic(allow={"global:cache"})
+def lookup(key):
+    if key in cache: return cache[key]   # OK
+    cache[key] = fetch(key)               # OK (allow-listed)
+    return cache[key]
+
+@karmic(allow=set())
+def vow_of_purity(x):
+    return x * 2          # OK
+    # any global write or I/O event raises KarmicViolation
+```
+
+**Debt** lets test suites assert maximum unacknowledged side-effect
+budgets across a suite of calls.
+
+---
+
+## 4. `pratitya` — reactive dependency graph
 
 Two surfaces.
 
@@ -119,7 +231,7 @@ The deep features:
 
 ---
 
-## 2. `dukkha` — retention profiler
+## 5. `dukkha` — retention profiler
 
 In Python, *clinging* is the technical name for: reference cycles you
 didn't mean to create, caches that keep growing, closures that capture
@@ -152,119 +264,6 @@ print(path.format())
 The cross-module bridge: `RetentionReport.pratitya_breakdown()` summarises
 *reactive-graph nodes* among the retained objects, so a leaking dependency
 graph reports its shape, not just its count.
-
----
-
-## 3. `anitya` — decay containers and validity windows
-
-Time as a first-class primitive. Three tools.
-
-**`DecayDict` / `DecaySet`** — *staleness as a continuous gradient*, not a
-binary alive/dead flag:
-
-```python
-from buddhism import DecayDict
-
-cache: DecayDict[str, dict] = DecayDict(half_life=60.0)
-cache.set("user:42", {"name": "Alice"})
-value, confidence = cache.get("user:42")
-# After 60s, confidence == 0.5; after 120s, 0.25; eventually evicted.
-```
-
-**`@impermanent(validity)`** — declare a function whose return value has
-a validity window. Past the window, you get back a `Stale[T]` that
-demands an explicit decision:
-
-```python
-from buddhism import impermanent, Stale, StalenessError
-
-@impermanent(validity=30.0)
-def fetch_rate() -> float:
-    return external_api.get_rate()
-
-result = fetch_rate()
-# Inside 30s: returns float directly.
-# After 30s:
-match result:
-    case Stale(): result = result.refresh()   # re-call
-    # or:
-    # result = result.accept_stale()           # explicit acknowledgement
-    # or just bare access — that raises StalenessError, by design.
-```
-
-**`MemoryPressureRegistry`** — drop-on-load registry built on
-`weakref.finalize`, releasing in priority order under memory pressure.
-
----
-
-## 4. `anatta` — structural identity tools
-
-```python
-from buddhism import StructuralEq, without_self, diff
-
-# Value semantics on demand
-class Point(StructuralEq):
-    def __init__(self, x, y):
-        self.x = x; self.y = y
-
-Point(1, 2) == Point(1, 2)        # True (same configuration)
-Point(1, 2) is Point(1, 2)        # False (distinct objects)
-{Point(1, 2), Point(1, 2)}        # set of size 1
-
-# Methods as pure functions over an explicit state
-class Counter:
-    def step(self, k): return self.n + k
-
-pure_step = without_self(Counter.step)
-pure_step({"n": 10}, 5)           # 15 — no instance needed
-
-# A diff that distinguishes "mutated" from "replaced"
-d = diff(a, b)
-d.same_identity        # a is b
-d.same_configuration   # public attrs equal
-d.field_changes        # {name: (a_value, b_value)}
-d.summary()            # 'mutated: same object, 2 field(s) changed'
-```
-
----
-
-## 5. `karma` — side-effect ledger
-
-```python
-from buddhism import karmic, KarmicViolation
-
-@karmic
-def update_record(record, value):
-    record["v"] = value
-    return record["v"]
-
-result, ledger = update_record({"v": 0}, 7)
-ledger.arg_mutations   # {0: ({'v': 0}, {'v': 7})}
-ledger.is_pure()       # False
-```
-
-The ledger names every observed side effect: globals **read**, globals
-**written**, **I/O events** (file open / socket connect / subprocess),
-arguments **mutated** by reference. Read-tracking is best-effort
-(CPython 3.11+ inline-caches LOAD_GLOBAL); write-tracking is reliable.
-
-**Strict mode** turns the ledger into a contract:
-
-```python
-@karmic(allow={"global:cache"})
-def lookup(key):
-    if key in cache: return cache[key]   # OK
-    cache[key] = fetch(key)               # OK (allow-listed)
-    return cache[key]
-
-@karmic(allow=set())
-def vow_of_purity(x):
-    return x * 2          # OK
-    # any global write or I/O event raises KarmicViolation
-```
-
-**Debt** lets test suites assert maximum unacknowledged side-effect
-budgets across a suite of calls.
 
 ---
 
