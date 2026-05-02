@@ -5,21 +5,30 @@ tools, a reactive dependency graph, a retention profiler,  runtime three-marks i
 and a project-quality checker** — dependency-free, in roughly 2,000 lines of Python.
 
 ```python
-from buddhism import Conditioned, cell, derived
+from buddhism import impermanent, Stale, StalenessError
+from buddhism import karmic, KarmicViolation
 
-class Invoice(Conditioned):
-    quantity   = cell(1)
-    unit_price = cell(10.0)
-    tax_rate   = cell(0.20)
+@impermanent(validity=30.0)
+def fetch_rate() -> float:
+    return external_api.get_rate()
 
-    @derived
-    def total(self):
-        return self.quantity * self.unit_price * (1 + self.tax_rate)
+result = fetch_rate()
+# Inside 30s: returns float directly.
+# After 30s:
+match result:
+    case Stale(): result = result.refresh()   # re-call
+    # or:
+    # result = result.accept_stale()           # explicit acknowledgement
+    # or just bare access — that raises StalenessError, by design.
 
-inv = Invoice()
-inv.total          # 12.0
-inv.quantity = 5
-inv.total          # 60.0  ← arose anew from the new conditions
+@karmic
+def update_record(record, value):
+    record["v"] = value
+    return record["v"]
+
+result, ledger = update_record({"v": 0}, 7)
+ledger.arg_mutations   # {0: ({'v': 0}, {'v': 7})}
+ledger.is_pure()       # False
 ```
 
 No manual recompute. No invalidation flags. No publish/subscribe ceremony.
