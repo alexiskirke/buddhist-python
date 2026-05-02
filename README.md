@@ -31,10 +31,6 @@ ledger.arg_mutations   # {0: ({'v': 0}, {'v': 7})}
 ledger.is_pure()       # False
 ```
 
-No manual recompute. No invalidation flags. No publish/subscribe ceremony.
-The values arise from their conditions and re-arise when the conditions
-change.
-
 > The doctrinal labels (Buddhist concepts) are how the package's pieces
 > are *named* — they map one-to-one to the engineering primitives. The
 > mapping is load-bearing, not decorative. See
